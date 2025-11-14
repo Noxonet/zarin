@@ -1,20 +1,20 @@
 {
-    "name": "abantether-bot",
-    "version": "1.0.0",
-    "description": "ربات real-time آبان تتر با Puppeteer و MongoDB",
-    "main": "bot.js",
-    "scripts": {
-      "start": "node bot.js"
-    },
-    "dependencies": {
-      "puppeteer-extra": "^3.3.6",
-      "puppeteer-extra-plugin-stealth": "^2.11.2",
-      "mongodb": "^6.3.0",
-      "dotenv": "^16.3.1",
-      "chalk": "^4.1.2"
-    },
-    "engines": {
-      "node": ">=18"
-    },
-    "postinstall": "npx puppeteer browsers install chrome"
-  }
+  "name": "abantether-bot",
+  "version": "1.0.0",
+  "description": "ربات هوشمند آبان تتر - کاملاً مطابق ساختار دیتابیس جدید",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "mongodb": "^6.3.0",
+    "dotenv": "^16.3.1",
+    "chalk": "^4.1.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "postinstall": "npx puppeteer browsers install chrome --with-deps"
+}
