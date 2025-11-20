@@ -1,21 +1,21 @@
 {
   "name": "abantether-bot",
   "version": "1.0.0",
-  "description": "ربات هوشمند آبان تتر - کاملاً مطابق ساختار دیتابیس جدید",
+  "description": "ربات هوشمند آبان تتر - اجرای مجدد با هر OTP جدید",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-    "puppeteer": "^22.0.0", 
+    "puppeteer": "^22.15.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "mongodb": "^6.3.0",
-    "dotenv": "^16.3.1",
+    "mongodb": "^6.8.0",
+    "dotenv": "^16.4.5",
     "chalk": "^4.1.2"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18.x"
   },
   "postinstall": "npx puppeteer browsers install chrome --with-deps"
 }
